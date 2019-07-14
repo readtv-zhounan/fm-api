@@ -10,17 +10,19 @@ use App\Service\TokenGenerator;
 use Symfony\Component\HttpClient\HttpClient;
 use App\Entity\Category;
 use App\Entity\Channel;
+use App\Entity\CategoryChannel;
 
 class UpdateChannelCommand extends ContainerAwareCommand
 {
     // the name of the command (the part after "bin/console")
+    private $channels;
+    private $em;
+
     protected static $defaultName = 'app:channel:update';
 
     protected function configure()
     {
-        $this
-            ->addArgument('categoryId', InputArgument::OPTIONAL, 'Category ID')
-        ;
+        $this->addArgument('categoryId', InputArgument::OPTIONAL, 'Category ID');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
@@ -31,15 +33,27 @@ class UpdateChannelCommand extends ContainerAwareCommand
             throw new \Exception('get token failed!');
         }
 
+        $this->em = $container->get('doctrine.orm.entity_manager');
+        if ($categoryId = $input->getArgument('categoryId')) {
+            $category = $this->em->getRepository('App:Category')->findOneByEntityId($categoryId);
+            if (!$category) {
+                $output->writeln(sprintf('<comment>Category %s not found</comment>', $categoryId));
+                return;
+            }
+            $this->updateChannels($token, $category);
+            $this->em->flush();
+
+            $output->writeln(sprintf('<info>Category %s channel updated</info>', $categoryId));
+            return;
+        }
         $categorys = [$input->getArgument('categoryId')];
         if ($categorys[0] === null) {
-            $categorys = $this->updateCategory($container, $token);
+            $categorys = $this->updateCategory($token);
         }
-
-        // $this->updateChannel($container, $token, $categorys);
+        $output->writeln('<info>Done!</info>');
     }
 
-    private function updateCategory($container, $token)
+    private function updateCategory($token)
     {
         $httpClient = HttpClient::create();
         $response = $httpClient->request('GET', $_ENV['API_HOST'].'/media/v7/channellive_categories?access_token='.$token);
@@ -48,54 +62,63 @@ class UpdateChannelCommand extends ContainerAwareCommand
         }
         $data = json_decode($response->getContent(), true);
 
-        $em = $container->get('doctrine.orm.entity_manager');
-        $savedRegionsCategories = $em->getRepository('App:Category')
+        $savedRegionsCategories = $this->em->getRepository('App:Category')
             ->findByTypeOrderBySequence('regions')
         ;
-        $savedContentsCategories = $em->getRepository('App:Category')
+        $savedContentsCategories = $this->em->getRepository('App:Category')
             ->findByTypeOrderBySequence('content')
         ;
         $categorys = [];
-        // foreach ($data['data']['regions'] as $sequence => $region) {
-        //     $currentRegion = current($savedRegionsCategories);
-        //     // 第一次保存
-        //     if (!$currentRegion or $region['id'] !== $currentRegion->getEntityId()) {
-        //         $category = new Category($region['id'], $region['title'], 'regions', $sequence);
-        //         $category = $this->updateChannels($container, $token, $category);
-        //         $em->persist($category);
-        //         $categorys[] = $category;
-        //
-        //         continue;
-        //     }
-        //     $categorys[] = $currentRegion;
-        //     // 所有数据都相等
-        //     if ($region['title'] == $currentRegion->getTitle()
-        //         && $sequence == $currentRegion->getSequence()
-        //     ) {
-        //         $currentRegion = $this->updateChannels($container, $token, $currentRegion);
-        //         $em->persist($currentRegion);
-        //         next($savedRegionsCategories);
-        //
-        //         continue;
-        //     }
-        //
-        //     if ($region['title'] !== $currentRegion->getTitle()) {
-        //         $currentRegion->setTitle($region['title']);
-        //     }
-        //
-        //     if ($sequence !== $currentRegion->getSequence()) {
-        //         $currentRegion->setSequence($sequence);
-        //     }
-        //     $em->persist($currentRegion);
-        // }
+        foreach ($data['data']['regions'] as $sequence => $region) {
+            $currentRegion = current($savedRegionsCategories);
+            // 第一次保存
+            if (!$currentRegion or $region['id'] !== $currentRegion->getEntityId()) {
+                $category = $this->em->getRepository('App:Category')->findOneByEntityId($region['id']);
+                if ($category) {
+                    $category->setSequence($sequence);
+                } else {
+                    $category = new Category($region['id'], $region['title'], 'regions', $sequence);
+                }
+                $this->em->persist($category);
+
+                $categorys[] = $category;
+                // $this->updateChannels($token, $category);
+
+                continue;
+            }
+            $categorys[] = $currentRegion;
+            // 所有数据都相等
+            if ($region['title'] == $currentRegion->getTitle()
+                && $sequence == $currentRegion->getSequence()
+            ) {
+                // $this->updateChannels($token, $currentRegion);
+                next($savedRegionsCategories);
+
+                continue;
+            }
+
+            if ($region['title'] !== $currentRegion->getTitle()) {
+                $currentRegion->setTitle($region['title']);
+            }
+
+            if ($sequence !== $currentRegion->getSequence()) {
+                $currentRegion->setSequence($sequence);
+            }
+            $this->em->persist($currentRegion);
+            next($savedRegionsCategories);
+        }
 
         foreach ($data['data']['content'] as $sequence => $content) {
             $currentContent = current($savedContentsCategories);
-            // 第一次保存
             if (!$currentContent or $content['id'] !== $currentContent->getEntityId()) {
-                $category = new Category($content['id'], $content['title'], 'content', $sequence);
-                $category = $this->updateChannels($container, $token, $category);
-                $em->persist($category);
+                $category = $this->em->getRepository('App:Category')->findOneByEntityId($content['id']);
+                if ($category) {
+                    $category->setSequence($sequence);
+                } else {
+                    $category = new Category($content['id'], $content['title'], 'content', $sequence);
+                }
+                // $this->updateChannels($token, $category);
+                $this->em->persist($category);
                 $categorys[] = $category;
 
                 continue;
@@ -105,8 +128,8 @@ class UpdateChannelCommand extends ContainerAwareCommand
             if ($region['title'] == $currentContent->getTitle()
                 && $sequence == $currentContent->getSequence()
             ) {
-                $currentContent = $this->updateChannels($container, $token, $currentContent);
-                $em->persist($currentContent);
+                // $this->updateChannels($token, $currentContent);
+                // $em->persist($currentContent);
                 next($savedContentsCategories);
 
                 continue;
@@ -119,58 +142,46 @@ class UpdateChannelCommand extends ContainerAwareCommand
             if ($sequence !== $currentContent->getSequence()) {
                 $currentContent->setSequence($sequence);
             }
-            $em->persist($currentContent);
+            $this->em->persist($currentContent);
         }
-        $em->flush();
+        $this->em->flush();
+
+        // 必须先保存category数据，才能保存对应Channel信息
+        foreach($categorys as $category) {
+            $this->updateChannels($token, $category);
+        }
 
         return $categorys;
     }
 
-    private function updateChannel($container, $token, $categorys)
-    {
-        $url = $_ENV['API_HOST'].'/media/v7/channellives?access_token='.$token.'&category_id=%categoryId';
-        $em = $container->get('doctrine.orm.entity_manager');
-        foreach ($category->getChannels() as $a) {
-            dump($a);die;
-        }
-        foreach ($categorys as $category) {
-            $httpClient = HttpClient::create();
-            $response = $httpClient->request('GET', sprintf($url, compact('categoryId')));
-
-            $data = json_decode($response->getContent(), true);
-            foreach ($data['data'] as $channelData) {
-                $channel = new Channel(
-                    $category,
-                    $channelData['id'],
-                    $channelData['popularity'],
-                    $channelData['title'],
-                    $channelData['description'],
-                    new \DateTime($channelData['update_time']),
-                    $channelData['thumbs']['small_thumb']
-                );
-                $em->persist($channel);
-            }
-        }
-        $em->flush();
-    }
-
-    private function updateChannels($container, $token, $category)
+    private function updateChannels($token, $category)
     {
         $savedChannel = [];
-        if ($category->getChannels()->count()) {
+        $data = $this->getAllChannel($token, $category);
 
-        }
-        $url = $_ENV['API_HOST'].'/media/v7/channellives?access_token='.$token.'&category_id=%categoryId';
-        $httpClient = HttpClient::create();
-        $response = $httpClient->request('GET', sprintf($url, ['categoryId' => $category->getEntityId()]));
-        $data = json_decode($response->getContent(), true);
         $channels = [];
-        $em = $container->get('doctrine.orm.entity_manager');
-        foreach ($data['data'] as $channelData) {
-            $channel = $em->getRepository('App:Channel')->findOneByEntityId($channelData['id']);
-            if (!$channel) {
+        $categoryChannels = $this->em->getRepository('App:CategoryChannel')
+            ->orderFindByCategory($category)
+        ;
+        $deleteCategoryChannels = [];
+        // $currentCategoryChannel = $category->getCategoryChannels();
+        foreach ($data as $sequence => $channelData) {
+            if (isset($this->channels[$channelData['id']])) {
+                $channel = $this->channels[$channelData['id']];
+            } else {
+                $channel = $this->em->getRepository('App:Channel')->findOneByEntityId($channelData['id']);
+            }
+
+            if ($channel) {
+                if ($channel->getUpdateTime()->format('Y-m-d H:i:s') !== $channelData['update_time']) {
+                    $channel = $channel->setPopularity($channelData['popularity'])
+                        ->setTitle($channelData['title'])
+                        ->setDescription($channelData['description'])
+                        ->setUpdateTime(new \DateTime($channelData['update_time']))
+                    ;
+                }
+            } else {
                 $channel = new Channel(
-                    $category,
                     $channelData['id'],
                     $channelData['popularity'],
                     $channelData['title'],
@@ -179,12 +190,56 @@ class UpdateChannelCommand extends ContainerAwareCommand
                     $channelData['thumbs']['small_thumb']
                 );
             }
-            $channel->addCategory($category);
-            $em->persist($channel);
-            $channels[] = $channel;
+            $this->em->persist($channel);
+            $this->channels[$channelData['id']] = $channel;
+            if (current($categoryChannels)) {
+                if (current($categoryChannels)->getChannel()->getEntityId() == $channelData['id']
+                && current($categoryChannels)->getSequence() == $sequence) {
+                    next($categoryChannels);
+                    continue;
+                }
+                $deleteCategoryChanels[] = current($categoryChannels)->getId();
+                $category->removeCategoryChannels(current($categoryChannels));
+            }
+            $savedCategoryChannel = $this->em->getRepository('App:CategoryChannel')
+                ->findOneBy([
+                    'category' => $category,
+                    'channel' => $channel,
+                ])
+            ;
+            if ($savedCategoryChannel && !in_array($savedCategoryChannel->getId(), $deleteCategoryChanels)) {
+                $savedCategoryChannel->setSequence($sequence);
+                $this->em->persist($savedCategoryChannel);
+                continue;
+            }
+
+            $categoryChannel = new CategoryChannel($category, $channel, $sequence);
+            $this->em->persist($categoryChannel);
+
+            $channel->addCategoryChannels($categoryChannel);
+            $this->em->persist($channel);
+            $category->addCategoryChannels($categoryChannel);
+            $this->em->persist($category);
+            $this->em->flush();
         }
-        $category->setChannels($channels);
 
         return $category;
+    }
+
+    private function getAllChannel($token, $category)
+    {
+        $total = 1;
+        $result = [];
+
+        $url = $_ENV['API_HOST'].'/media/v7/channellives?access_token='.$token.'&category_id=%s&page=%s';
+        $httpClient = HttpClient::create();
+        for ($page=1; $page <= $total; $page++) {
+            $response = $httpClient->request('GET', sprintf($url, $category->getEntityId(), $page));
+            $data = json_decode($response->getContent(), true);
+            $total = (int)ceil($data['total']/30);
+            $result = array_merge($result, $data['data']);
+        }
+
+        return $result;
     }
 }
