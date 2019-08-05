@@ -33,8 +33,3 @@ services:
             - '%env(CLIENT_ID)%'
             - '%env(CLIENT_SECRET)%'
             - '%env(MEMCACHE_URL)%'
-
-    serializer_subscriber.channel:
-        class: App\Serializer\Subscriber\ChannelSerializerSubscriber
-        tags:
-            - { name: jms_serializer.event_subscriber }
